@@ -17,31 +17,28 @@ type WebSocketServer struct {
 	Broadcast chan *Message
 }
 
+type Message struct {
+	ClientName string `json:"clientName"`
+	Content    string `json:"content"`
+}
+
 func (s *WebSocketServer) HandleMessages() {
-	panic("unimplemented")
+	for {
+		msg := <-s.Broadcast
+
+		// Send the message to all Clients
+		for client := range s.Clients {
+			err := client.WriteMessage(websocket.TextMessage, getMessageTemplate(msg))
+			if err != nil {
+				log.Printf("Write  Error: %v ", err)
+				client.Close()
+				delete(s.Clients, client)
+			}
+		}
+	}
 }
 
 func (s *WebSocketServer) HandleWebSocket(ctx *websocket.Conn) {
-	panic("unimplemented")
-}
-
-func NewWebSocket() *WebSocketServer {
-	return &WebSocketServer{
-		ID:        uuid.New().String(),
-		Clients:   make(map[*websocket.Conn]bool),
-		Broadcast: make(chan *Message),
-	}
-}
-
-func (s *WebSocketServer) HandleConnections(ctx *fiber.Ctx) error {
-	if websocket.IsWebSocketUpgrade(ctx) {
-		return ctx.Next()
-	}
-	return fiber.ErrUpgradeRequired
-}
-
-func (s *WebSocketServer) HandleWebSocketConnection(ctx *websocket.Conn) {
-
 	// Register a new Client
 	s.Clients[ctx] = true
 	defer func() {
@@ -60,7 +57,8 @@ func (s *WebSocketServer) HandleWebSocketConnection(ctx *websocket.Conn) {
 		log.Println(string(msg))
 		var message Message
 		if err := json.Unmarshal(msg, &message); err != nil {
-			log.Fatalf("Error Unmarshalling")
+			log.Println("Error Unmarshalling:", err) // Use log.Println instead of log.Fatalf to avoid exiting
+			continue                                  // Continue to the next message
 		}
 		message.ClientName = s.ID
 
@@ -68,23 +66,30 @@ func (s *WebSocketServer) HandleWebSocketConnection(ctx *websocket.Conn) {
 	}
 }
 
-func (s *WebSocketServer) ProcessMessages() {
-	for {
-		msg := <-s.Broadcast
-
-		// Send the message to all Clients
-
-		for client := range s.Clients {
-			err := client.WriteMessage(websocket.TextMessage, getMessageTemplate(msg))
-			if err != nil {
-				log.Printf("Write  Error: %v ", err)
-				client.Close()
-				delete(s.Clients, client)
-			}
-
-		}
-
+func NewWebSocket() *WebSocketServer {
+	return &WebSocketServer{
+		ID:        uuid.New().String(),
+		Clients:   make(map[*websocket.Conn]bool),
+		Broadcast: make(chan *Message),
 	}
+}
+
+func (s *WebSocketServer) HandleConnections(ctx *fiber.Ctx) error {
+	if websocket.IsWebSocketUpgrade(ctx) {
+		ctx.Locals("allowed", true)
+		return ctx.Next()
+	}
+	return fiber.ErrUpgradeRequired
+}
+
+func (s *WebSocketServer) HandleWebSocketConnection(ctx *websocket.Conn) {
+	// moved HandleWebSocket logic here
+	s.HandleWebSocket(ctx)
+}
+
+func (s *WebSocketServer) ProcessMessages() {
+	// Renamed to HandleMessages and moved logic here
+	s.HandleMessages()
 }
 
 func getMessageTemplate(msg *Message) []byte {
@@ -101,4 +106,21 @@ func getMessageTemplate(msg *Message) []byte {
 	}
 
 	return renderedMessage.Bytes()
+}
+
+func main() {
+	app := fiber.New()
+	server := NewWebSocket()
+
+	// Serve static files (if needed)
+	app.Static("/", "./public")
+
+	// WebSocket route
+	app.Use("/ws", server.HandleConnections)
+	app.Get("/ws", websocket.New(server.HandleWebSocketConnection))
+
+	// Start processing messages in a separate goroutine
+	go server.ProcessMessages()
+
+	log.Fatal(app.Listen(":3000"))
 }
